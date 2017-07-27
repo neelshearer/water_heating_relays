@@ -8,10 +8,7 @@
  * on campsite stair lighting when it gets dark. It adjusts the level of light as 
  * it gets darker to avoid dazzling campers and disturbing animal life too much.
  * Using a loop counter it activates a relay with a 4% duty cycle to control a
- * grey water recycling system, and prevent overfilling. It also uses this 
- * counter and the light sensor to determine when to turn off the freezer 
- * overnight to help save battery power. The freezer automatically turns on again
- * at dawn.
+ * grey water recycling system, and prevent overfilling the tank. 
  * 
  * It makes use of several libraries:
  * 
@@ -19,21 +16,19 @@
  * Dallas Temperature
  * SPI
  * Adafruit Graphics library
- * Adafruit Motorshield (v2.3)
  * TSL2561 Light Sensor
  * 
  * (You will need to install all of these if you want the code below to compile!)
  * 
- * The system uses 4 onewire temperature sensors, all 4 PWM outputs of an Adafruit 
- * Motorshield (v2.3), a TSL2561 Light sensor from Sparkfun and an Adafruit 1306 
- * Monochrome OLED display, as well as two relay shields.
+ * The system uses 4 onewire temperature sensors, a TSL2561 Light sensor from 
+ * Sparkfun and an Adafruit 1306 Monochrome OLED display, as well as 6 relays.
  * 
- * It should be fairly easy to tweak this to your needs - code is commented, and 
+ * It should be fairly easy to tweak this to your needs - code is mostly commented, 
  * makes use of only trivial constructs (if, for, do etc) and basic glyph building 
  * capabilities of the graphics library.
  * 
  * No liability or responsibility can be taken for those who use this code - it is
- * supplied without warrantee or guarantee of suitability. Proper care and 
+ * supplied without warranty or guarantee of suitability. Proper care and 
  * attention must be taken when designing your system - there are multiple 
  * possible dangers, for example:
  * 
@@ -51,8 +46,6 @@
 #include <Arduino.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
-#include <Adafruit_MotorShield.h>
-#include "utility/Adafruit_PWMServoDriver.h"
 #include <SFE_TSL2561.h>
 #include <SPI.h>
 #include <Wire.h>
@@ -78,7 +71,7 @@ OneWire oneWire(ONE_WIRE_BUS);
 // Pass our oneWire reference to Dallas Temperature.
 DallasTemperature sensors(&oneWire);
 
-// If using software SPI (the default case):
+// Using software SPI:
 #define OLED_MOSI   9
 #define OLED_CLK   10
 #define OLED_DC    11
@@ -88,9 +81,9 @@ Adafruit_SSD1306 display(OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
 
 // Declare the glyph for the Tank loop 
 
-#define LOGO16_GLCD_HEIGHT 16 
-#define LOGO16_GLCD_WIDTH  16 
-static const unsigned char PROGMEM logo16_glcd_bmp[] =
+#define LOGO16_TANK_HEIGHT 16 
+#define LOGO16_TANK_WIDTH  16 
+static const unsigned char PROGMEM logo16_tank_bmp[] =
 { 
   B00000000, B00000000,
   B00000001, B10000000,
@@ -189,17 +182,14 @@ boolean solpan = false;
 boolean soltub = false;
 boolean lights = false;
 boolean grow = false;
-boolean freezer = false;
 
 int loopno = 5;
-int loopFreezer = 0;
 int loopRelay = 0;
 int errcount = 0;
 
 const int diffoff = 5;
 const int diffon = 10;
 
-#define relayFreezer 3
 #define relayGrow    4
 #define relayTank    5
 #define relayRocket  6
@@ -239,9 +229,6 @@ void setup()
   // init done
   display.clearDisplay();
 
-  // declare the relay pin3 an output for the freezer power
-  pinMode(relayFreezer, OUTPUT);
-
   // declare the relay pin4 an output for the grey water pump
   pinMode(relayGrow, OUTPUT);
 
@@ -262,14 +249,13 @@ void setup()
 
   // set relays to off initially
   digitalWrite(relayGrow,HIGH);
-  digitalWrite(relayFreezer,HIGH);
   digitalWrite(relayTank,HIGH);
   digitalWrite(relayRocket,HIGH);
   digitalWrite(relaySolPan,HIGH);
   digitalWrite(relaySolTub,HIGH);
   digitalWrite(relayLights,HIGH);
 
-  // Test all pumps at maximum, and the lights
+  // Test all pumps, and the lights
   delay(1500);
   digitalWrite(relayGrow,LOW);
   delay(1000);
@@ -365,16 +351,11 @@ void loop(void)
 
   ++loopno;
 
-  // Now check if we are at the first 4 cycles, or between 37 and 42 cycle during the day and 
+  // Now check if we are at the first 4 cycles, or between 37 and 42 cycle and 
   //   if so, turn relay on. 
-  // At night use only the first 4 cycles to reduce overnight power usage. 
   // Otherwise, leave grow pump switched off.
 
-  if ((loopno <= 4 || (loopno > 37 && loopno <= 41)) && lights == false) {
-    digitalWrite(relayGrow,LOW); // switch the relay and run the pump
-    grow = true;
-  }
-  else if (loopno <= 5 && lights == true) {
+  if (loopno <= 4 || (loopno > 37 && loopno <= 41)) {
     digitalWrite(relayGrow,LOW); // switch the relay and run the pump
     grow = true;
   }
@@ -384,52 +365,12 @@ void loop(void)
     grow = false;
   }
 
-  // Freezer will be turned off and on with a cycle of 6 complete loopno cycles (about 1 hour). 
-  // Once stair lights are lit, freezer will run on a new cycle...
 
-  // reset the counter the moment the stair lights are off and after the counter has 
-  // completed a complete cycle (12 count)
-  if (lights == false && loopFreezer >= 12) {
-    loopFreezer = 0;
-  }
+  //********************************************************************
+  // Main water heating routines
+  //********************************************************************
 
-  // now set our freezer loop counter using loopno as a base
-  if (loopno == 1) {
-    ++loopFreezer;
-  }
-
-  // if the freezer loop count is less than or equal to 8 then turn the freezer on
-  // else turn the freezer off. This is roughly equal to 60 minutes in every 2 hours.
-  // As freezer loop is only ever reset during the day, this means freezer will not 
-  // turn on overnight apart for quick boosts - roughly 30 minutes in every 2 hours)
-  if (grow == false && lux <= 700 && (loopFreezer <= 6 || 
-    (loopFreezer > 18 && loopFreezer <=22) || 
-    (loopFreezer > 30 && loopFreezer <=34) || 
-    (loopFreezer > 42 && loopFreezer <=46) ||  
-    (loopFreezer > 54 && loopFreezer <=58) ||  
-    (loopFreezer > 66 && loopFreezer <=70))) {
-    digitalWrite(relayFreezer,LOW); // switch the relay and turn on freezer   
-    freezer = true;
-  }
-  else if (grow == false && lux > 700 && lux <= 1500 && loopFreezer <= 9) 
-  {
-    digitalWrite(relayFreezer,LOW); // switch the relay and turn on freezer   
-    freezer = true;
-  }
-  else if (grow == false && lux > 1500 && loopFreezer <= 11) 
-  {
-    digitalWrite(relayFreezer,LOW); // switch the relay and turn on freezer   
-    freezer = true;
-  }
-  else 
-  {
-    digitalWrite(relayFreezer,HIGH); // switch the relay and turn off freezer
-    freezer = false;
-  }
-
-  // call sensors.requestTemperatures() to issue a global temperature
-  // request to all devices on the bus
-
+  // Get temperatures from all sensors on the bus
   sensors.requestTemperatures(); 
 
   //
@@ -451,9 +392,10 @@ void loop(void)
   //  state (can happen if there is a bad connection to a sensor)
   // Error state of the onewire temp sensor is 85 degrees, however, I have also 
   //  seen temps of -127 reported: check for both and declare an error state
-  // Error state declared when the rocket stove is reporting a temperature above 
-  //  95degrees
-  // Error state is the activation of all pumps at high speed for safety reasons.
+  // Error state declared when the tank temperature reaches above 65degrees
+  // Error state declared when the rocket stove, Solar panel or Solar Tubes are 
+  //  reporting a temperature above 95degrees
+  // Error state is the activation of all pumps.
   // Even in an error state, pumps are allowed to rest for roughly 30 seconds in
   //  every 5 minutes (95% duty cycle) using the loop counter.
   //
@@ -463,7 +405,6 @@ void loop(void)
     tempSolar==-127.00 || 
     tempRocket==-127.00 || 
     tempSolTub==-127.00 ||
-    tempTank==85.00 || 
     tempLLH==85.00 || 
     tempSolar==85.00 || 
     tempRocket==85.00 ||
@@ -474,7 +415,7 @@ void loop(void)
     tempTank==tempSolTub ||
     tempLLH==tempSolar || 
     tempLLH==tempRocket ||
-    tempLLH== tempSolTub ||
+    tempLLH==tempSolTub ||
     tempSolar==tempRocket ||
     tempSolar==tempSolTub ||
     tempRocket==tempSolTub)
@@ -484,8 +425,10 @@ void loop(void)
   else { 
     errcount=0; // if no sensors are reporting an error, reset counter
   };
-  if (errcount>=5 || // once a temperature error state has existed for 5 cycles or more, start motors, otherwise ignore and treat as transient error
-  tempRocket>=95.00 || // unless rocket or tank are overheated then immediately pump for all you're worth!
+  if (errcount>=3 ||       // once a temperature error state has existed for 3 cycles or more, 
+  tempRocket>=95.00 || // start motors, otherwise ignore and treat as transient error 
+  tempSolar>=95.00 ||  // unless rocket or panels, or tubes or tank are overheated then 
+  tempSolTub>=95.00 || // immediately pump for all you're worth!
   tempTank>=65.00)
   {
     if (loopno < 5) { // let pumps rest for a few cycles even in an error state
@@ -552,7 +495,24 @@ void loop(void)
     display.println(tempRocket);
     display.display();  
 
-    delay(1000);
+    delay(750);
+
+    display.setTextWrap(false);
+    display.setTextSize(2);
+    display.setTextColor(WHITE);
+    display.setCursor(0,0);
+    display.clearDisplay();
+    display.print("Tank:");
+    display.println(tempTank);
+    display.print("Err: ");
+    display.println(errcount);
+    display.print("Loop:");
+    display.println(loopno);
+    display.print("Relay:");
+    display.println(loopRelay);
+    display.display();  
+
+    delay(750);
 
     // Jump to end of loop
 
@@ -568,368 +528,412 @@ void loop(void)
   // Start of Pump logic 
   ///////////////////////////////
 
-  // ensures that the solar panels and solar tubes get pumped 
-  // occasionally, regardless of the tank and LLH temperatures
+  // loop counter should be reset after 8 loops.
 
-  if (lights == false && (
-  loopno == 6 || 
-    loopno == 36 )) {
-    delay(250);
-    digitalWrite(relaySolPan,LOW); // switch the rocket pump on
-    delay(250);
-    digitalWrite(relaySolTub,LOW); // switch the rocket pump on
-    solpan = true;
-    soltub = true;
+  if (loopRelay >= 9) {
+    loopRelay = 0;
   }
-  else
+
+  // add 1 to the loop counter, and return new value
+
+  ++loopRelay;
+
+  //
+  // If LLH is warmer than Tank+5 degrees, then start the Tank pump
+  //
+
+  delay(250);
+  if (tempTank>=63)
   {
-
-    // loop counter should be reset after 8 loops.
-
-    if (loopRelay >= 9) {
-      loopRelay = 0;
-    }
-
-    // add 1 to the loop counter, and return new value
-
-    ++loopRelay;
-
-    //
-    // If LLH is warmer than Tank+5 degrees, then start the Tank pump
-    //
-
-    delay(250);
-    if (tempLLH>(tempTank+5))
+    if ((loopRelay == 1 || 
+      loopRelay == 2 || 
+      loopRelay == 4 || 
+      loopRelay == 5 || 
+      loopRelay == 7 || 
+      loopRelay == 8 )) 
     {
-      if (tempLLH>=tempTank+5)
-      {
-        if (loopRelay == 1) 
-        {
-          digitalWrite(relayTank,LOW); // switch the tank pump on
-          tank = true;
-        }
-        else
-        {
-          digitalWrite(relayTank,HIGH); // switch the tank pump off
-          tank = false;
-        }
-      }
-      else if (tempLLH>=tempTank+10)
-      {
-        if ((loopRelay == 1 || 
-          loopRelay == 5 )) 
-        {
-          digitalWrite(relayTank,LOW); // switch the tank pump on
-          tank = true;
-        }
-        else
-        {
-          digitalWrite(relayTank,HIGH); // switch the tank pump off
-          tank = false;
-        }
-      }
-      else if (tempLLH>=tempTank+15)
-      {
-        if ((loopRelay == 1 || 
-          loopRelay == 4 || 
-          loopRelay == 7 )) 
-        {
-          digitalWrite(relayTank,LOW); // switch the tank pump on
-          tank = true;
-        }
-        else
-        {
-          digitalWrite(relayTank,HIGH); // switch the tank pump off
-          tank = false;
-        }
-      }
-      else if (tempLLH>=90)
-      {
-        if ((loopRelay == 1 || 
-          loopRelay == 2 || 
-          loopRelay == 4 || 
-          loopRelay == 5 || 
-          loopRelay == 7 || 
-          loopRelay == 8 )) 
-        {
-          digitalWrite(relayTank,LOW); // switch the tank pump on
-          tank = true;
-        }
-        else
-        {
-          digitalWrite(relayTank,HIGH); // switch the tank pump off
-          tank = false;
-        }
-      }
-      else
-      {
-        if ((loopRelay == 1 || 
-          loopRelay == 3 || 
-          loopRelay == 5 || 
-          loopRelay == 7 )) 
-        {
-          digitalWrite(relayTank,LOW); // switch the tank pump on
-          tank = true;
-        }
-        else
-        {
-          digitalWrite(relayTank,HIGH); // switch the tank pump off
-          tank = false;
-        }
-      }
-
+      digitalWrite(relayTank,LOW); // switch the tank pump on 
+      tank = true;
     }
     else
     {
       digitalWrite(relayTank,HIGH); // switch the tank pump off
       tank = false;
-    };
-
-
-    //
-    // If Solar is warmer than LLH+10 degrees, then start the Solar pump
-    //
-
-    delay(250);
-    if (tempSolar>(tempLLH))
+    }
+  }
+  else if ((tempTank<25 && tempLLH>(tempTank+5)) ||
+    (tempTank<35 && tempLLH>(tempTank+10)) || 
+    (tempTank>35 && tempTank<55 && tempLLH>(tempTank+15)) ||
+    (tempTank>55 && tempLLH>(tempTank+10)))
+  {
+    if (tempLLH < 70)
     {
-      if (tempSolar<65)
+      if ((loopRelay == 2 || 
+        loopRelay == 6 )) 
       {
-        if (loopRelay == 1) 
-        {
-          digitalWrite(relaySolPan,LOW); // switch the solar panel pump on 
-          solpan = true;
-        }
-        else
-        {
-          digitalWrite(relaySolPan,HIGH); // switch the solar panel pump off
-          solpan = false;
-        }
-      }
-      else if (tempSolar>=90)
-      {
-        if ((loopRelay == 1 || 
-          loopRelay == 2 || 
-          loopRelay == 4 || 
-          loopRelay == 5 || 
-          loopRelay == 7 || 
-          loopRelay == 8 )) 
-        {
-          digitalWrite(relaySolPan,LOW); // switch the solar panel pump on 
-          solpan = true;
-        }
-        else
-        {
-          digitalWrite(relaySolPan,HIGH); // switch the solar panel pump off
-          solpan = false;
-        }
+        digitalWrite(relayTank,LOW); // switch the tank pump on
+        tank = true;
       }
       else
       {
-        if ((loopRelay == 1 || 
-          loopRelay == 3 || 
-          loopRelay == 5 || 
-          loopRelay == 7 )) 
-        {
-          digitalWrite(relaySolPan,LOW); // switch the solar panel pump on 
-          solpan = true;
-        }
-        else
-        {
-          digitalWrite(relaySolPan,HIGH); // switch the solar panel pump off
-          solpan = false;
-        }
+        digitalWrite(relayTank,HIGH); // switch the tank pump off
+        tank = false;
       }
+    }
+    else if (tempLLH >= 70 && tempLLH < 75)
+    {
+      if ((loopRelay == 2 || 
+        loopRelay == 5 || 
+        loopRelay == 8 )) 
+      {
+        digitalWrite(relayTank,LOW); // switch the tank pump on
+        tank = true;
+      }
+      else
+      {
+        digitalWrite(relayTank,HIGH); // switch the tank pump off
+        tank = false;
+      }
+    }
+    else if (tempLLH>=90)
+    {
+      if ((loopRelay == 2 || 
+        loopRelay == 3 || 
+        loopRelay == 5 || 
+        loopRelay == 6 || 
+        loopRelay == 8 || 
+        loopRelay == 9 )) 
+      {
+        digitalWrite(relayTank,LOW); // switch the tank pump on
+        tank = true;
+      }
+      else
+      {
+        digitalWrite(relayTank,HIGH); // switch the tank pump off
+        tank = false;
+      }
+    }
+    else
+    {
+      if ((loopRelay == 2 || 
+        loopRelay == 4 || 
+        loopRelay == 6 || 
+        loopRelay == 8 )) 
+      {
+        digitalWrite(relayTank,LOW); // switch the tank pump on
+        tank = true;
+      }
+      else
+      {
+        digitalWrite(relayTank,HIGH); // switch the tank pump off
+        tank = false;
+      }
+    }
+
+  }
+  else
+  {
+    digitalWrite(relayTank,HIGH); // switch the tank pump off
+    tank = false;
+  };
+
+
+  //
+  // If Solar is warmer than LLH+10 degrees, then start the Solar pump
+  //
+
+  delay(250);
+  if (tempTank>=63)
+  {
+    if ((loopRelay == 1 || 
+      loopRelay == 2 || 
+      loopRelay == 4 || 
+      loopRelay == 5 || 
+      loopRelay == 7 || 
+      loopRelay == 8 )) 
+    {
+      digitalWrite(relaySolPan,LOW); // switch the solar panel pump on 
+      solpan = true;
     }
     else
     {
       digitalWrite(relaySolPan,HIGH); // switch the solar panel pump off
       solpan = false;
-    };
-
-    //
-    // If Solar Tube is warmer than LLH+5 degrees, then start the Solar Tube pump
-    //
-
-    delay(250);
-    if (tempSolTub>(tempLLH))
+    }
+  }
+  else if (tempSolar>(tempLLH+5))
+  {
+    if (tempSolar<65)
     {
-      if (tempSolTub<65)
+      if (loopRelay == 1) 
       {
-        if (loopRelay == 1) 
-        {
-          digitalWrite(relaySolTub,LOW); // switch the solar tubes pump on
-          soltub = true;
-        }
-        else
-        {
-          digitalWrite(relaySolTub,HIGH); // switch the solar tubes pump off
-          soltub = false;
-        }
-      }
-      else if (tempSolTub>=65 && tempSolTub<75)
-      {
-        if ((loopRelay == 1 || 
-          loopRelay == 5 )) 
-        {
-          digitalWrite(relaySolTub,LOW); // switch the solar tubes pump on
-          soltub = true;
-        }
-        else
-        {
-          digitalWrite(relaySolTub,HIGH); // switch the solar tubes pump off
-          soltub = false;
-        }
-      }
-      else if (tempSolTub>=75 && tempSolTub<85)
-      {
-        if ((loopRelay == 1 || 
-          loopRelay == 4 || 
-          loopRelay == 7 )) 
-        {
-          digitalWrite(relaySolTub,LOW); // switch the solar tubes pump on
-          soltub = true;
-        }
-        else
-        {
-          digitalWrite(relaySolTub,HIGH); // switch the solar tubes pump off
-          soltub = false;
-        }
-      }
-      else if (tempSolTub>=90)
-      {
-        if ((loopRelay == 1 || 
-          loopRelay == 2 || 
-          loopRelay == 4 || 
-          loopRelay == 5 || 
-          loopRelay == 7 || 
-          loopRelay == 8 )) 
-        {
-          digitalWrite(relaySolTub,LOW); // switch the solar tubes pump on
-          soltub = true;
-        }
-        else
-        {
-          digitalWrite(relaySolTub,HIGH); // switch the solar tubes pump off
-          soltub = false;
-        }
+        digitalWrite(relaySolPan,LOW); // switch the solar panel pump on 
+        solpan = true;
       }
       else
       {
-        if ((loopRelay == 1 || 
-          loopRelay == 3 || 
-          loopRelay == 5 || 
-          loopRelay == 7 )) 
-        {
-          digitalWrite(relaySolTub,LOW); // switch the solar tubes pump on
-          soltub = true;
-        }
-        else
-        {
-          digitalWrite(relaySolTub,HIGH); // switch the solar tubes pump off
-          soltub = false;
-        }
+        digitalWrite(relaySolPan,HIGH); // switch the solar panel pump off
+        solpan = false;
       }
+    }
+    else if (tempSolar>=90)
+    {
+      if ((loopRelay == 1 || 
+        loopRelay == 2 || 
+        loopRelay == 4 || 
+        loopRelay == 5 || 
+        loopRelay == 7 || 
+        loopRelay == 8 )) 
+      {
+        digitalWrite(relaySolPan,LOW); // switch the solar panel pump on 
+        solpan = true;
+      }
+      else
+      {
+        digitalWrite(relaySolPan,HIGH); // switch the solar panel pump off
+        solpan = false;
+      }
+    }
+    else
+    {
+      if ((loopRelay == 1 || 
+        loopRelay == 3 || 
+        loopRelay == 5 || 
+        loopRelay == 7 )) 
+      {
+        digitalWrite(relaySolPan,LOW); // switch the solar panel pump on 
+        solpan = true;
+      }
+      else
+      {
+        digitalWrite(relaySolPan,HIGH); // switch the solar panel pump off
+        solpan = false;
+      }
+    }
+  }
+  else 
+  {
+    digitalWrite(relaySolPan,HIGH); // switch the solar panel pump off
+    solpan = false;
+  };
 
+  //
+  // If Solar Tube is warmer than LLH+5 degrees, then start the Solar Tube pump
+  //
+
+  delay(250);
+  if (tempTank>=63)
+  {
+    if ((loopRelay == 1 || 
+      loopRelay == 2 || 
+      loopRelay == 4 || 
+      loopRelay == 5 || 
+      loopRelay == 7 || 
+      loopRelay == 8 )) 
+    {
+      digitalWrite(relaySolTub,LOW); // switch the solar tubes pump on 
+      soltub = true;
     }
     else
     {
       digitalWrite(relaySolTub,HIGH); // switch the solar tubes pump off
       soltub = false;
-    };
-
-
-    //
-    // If Rocket is warmer than LLH+5 degrees, then start the Rocket pump
-    //
-
-    delay(250);
-    if (tempRocket>(tempLLH))
+    }
+  }
+  else if (tempSolTub>(tempLLH+5))
+  {
+    if (tempSolTub<65)
     {
-      if (tempRocket<65)
+      if (loopRelay == 1) 
       {
-        if (loopRelay == 1) 
-        {
-          digitalWrite(relayRocket,LOW); // switch the rocket pump on
-          rocket = true;
-        }
-        else
-        {
-          digitalWrite(relayRocket,HIGH); // switch the rocket pump off
-          rocket = false;
-        }
-      }
-      else if (tempRocket>=65 && tempRocket<75)
-      {
-        if ((loopRelay == 1 || 
-          loopRelay == 5 )) 
-        {
-          digitalWrite(relayRocket,LOW); // switch the rocket pump on
-          rocket = true;
-        }
-        else
-        {
-          digitalWrite(relayRocket,HIGH); // switch the rocket pump off
-          rocket = false;
-        }
-      }
-      else if (tempRocket>=75 && tempRocket<85)
-      {
-        if ((loopRelay == 1 || 
-          loopRelay == 4 || 
-          loopRelay == 7 )) 
-        {
-          digitalWrite(relayRocket,LOW); // switch the rocket pump on
-          rocket = true;
-        }
-        else
-        {
-          digitalWrite(relayRocket,HIGH); // switch the rocket pump off
-          rocket = false;
-        }
-      }
-      else if (tempRocket>=90)
-      {
-        if ((loopRelay == 1 || 
-          loopRelay == 2 || 
-          loopRelay == 4 || 
-          loopRelay == 5 || 
-          loopRelay == 7 || 
-          loopRelay == 8 )) 
-        {
-          digitalWrite(relayRocket,LOW); // switch the rocket pump on
-          rocket = true;
-        }
-        else
-        {
-          digitalWrite(relayRocket,HIGH); // switch the rocket pump off
-          rocket = false;
-        }
+        digitalWrite(relaySolTub,LOW); // switch the solar tubes pump on
+        soltub = true;
       }
       else
       {
-        if ((loopRelay == 1 || 
-          loopRelay == 3 || 
-          loopRelay == 5 || 
-          loopRelay == 7 )) 
-        {
-          digitalWrite(relayRocket,LOW); // switch the rocket pump on
-          rocket = true;
-        }
-        else
-        {
-          digitalWrite(relayRocket,HIGH); // switch the rocket pump off
-          rocket = false;
-        }
+        digitalWrite(relaySolTub,HIGH); // switch the solar tubes pump off
+        soltub = false;
       }
+    }
+    else if (tempSolTub>=65 && tempSolTub<75)
+    {
+      if ((loopRelay == 1 || 
+        loopRelay == 5 )) 
+      {
+        digitalWrite(relaySolTub,LOW); // switch the solar tubes pump on
+        soltub = true;
+      }
+      else
+      {
+        digitalWrite(relaySolTub,HIGH); // switch the solar tubes pump off
+        soltub = false;
+      }
+    }
+    else if (tempSolTub>=75 && tempSolTub<85)
+    {
+      if ((loopRelay == 1 || 
+        loopRelay == 4 || 
+        loopRelay == 7 )) 
+      {
+        digitalWrite(relaySolTub,LOW); // switch the solar tubes pump on
+        soltub = true;
+      }
+      else
+      {
+        digitalWrite(relaySolTub,HIGH); // switch the solar tubes pump off
+        soltub = false;
+      }
+    }
+    else if (tempSolTub>=90)
+    {
+      if ((loopRelay == 1 || 
+        loopRelay == 2 || 
+        loopRelay == 4 || 
+        loopRelay == 5 || 
+        loopRelay == 7 || 
+        loopRelay == 8 )) 
+      {
+        digitalWrite(relaySolTub,LOW); // switch the solar tubes pump on
+        soltub = true;
+      }
+      else
+      {
+        digitalWrite(relaySolTub,HIGH); // switch the solar tubes pump off
+        soltub = false;
+      }
+    }
+    else
+    {
+      if ((loopRelay == 1 || 
+        loopRelay == 3 || 
+        loopRelay == 5 || 
+        loopRelay == 7 )) 
+      {
+        digitalWrite(relaySolTub,LOW); // switch the solar tubes pump on
+        soltub = true;
+      }
+      else
+      {
+        digitalWrite(relaySolTub,HIGH); // switch the solar tubes pump off
+        soltub = false;
+      }
+    }
 
+  }
+  else
+  {
+    digitalWrite(relaySolTub,HIGH); // switch the solar tubes pump off
+    soltub = false;
+  };
+
+
+  //
+  // If Rocket is warmer than LLH+5 degrees, then start the Rocket pump
+  //
+
+  delay(250);
+  if (tempTank>=63)
+  {
+    if ((loopRelay == 1 || 
+      loopRelay == 2 || 
+      loopRelay == 4 || 
+      loopRelay == 5 || 
+      loopRelay == 7 || 
+      loopRelay == 8 )) 
+    {
+      digitalWrite(relayRocket,LOW); // switch the rocket pump on 
+      rocket = true;
     }
     else
     {
       digitalWrite(relayRocket,HIGH); // switch the rocket pump off
       rocket = false;
-    };
+    }
+  }
+  else if (tempRocket>(tempLLH+5))
+  {
+    if (tempRocket<65)
+    {
+      if (loopRelay == 1) 
+      {
+        digitalWrite(relayRocket,LOW); // switch the rocket pump on
+        rocket = true;
+      }
+      else
+      {
+        digitalWrite(relayRocket,HIGH); // switch the rocket pump off
+        rocket = false;
+      }
+    }
+    else if (tempRocket>=65 && tempRocket<75)
+    {
+      if ((loopRelay == 1 || 
+        loopRelay == 5 )) 
+      {
+        digitalWrite(relayRocket,LOW); // switch the rocket pump on
+        rocket = true;
+      }
+      else
+      {
+        digitalWrite(relayRocket,HIGH); // switch the rocket pump off
+        rocket = false;
+      }
+    }
+    else if (tempRocket>=70 && tempRocket<80)
+    {
+      if ((loopRelay == 1 || 
+        loopRelay == 4 || 
+        loopRelay == 7 )) 
+      {
+        digitalWrite(relayRocket,LOW); // switch the rocket pump on
+        rocket = true;
+      }
+      else
+      {
+        digitalWrite(relayRocket,HIGH); // switch the rocket pump off
+        rocket = false;
+      }
+    }
+    else if (tempRocket>=85)
+    {
+      if ((loopRelay == 1 || 
+        loopRelay == 2 || 
+        loopRelay == 4 || 
+        loopRelay == 5 || 
+        loopRelay == 7 || 
+        loopRelay == 8 )) 
+      {
+        digitalWrite(relayRocket,LOW); // switch the rocket pump on
+        rocket = true;
+      }
+      else
+      {
+        digitalWrite(relayRocket,HIGH); // switch the rocket pump off
+        rocket = false;
+      }
+    }
+    else
+    {
+      if ((loopRelay == 1 || 
+        loopRelay == 3 || 
+        loopRelay == 5 || 
+        loopRelay == 7 )) 
+      {
+        digitalWrite(relayRocket,LOW); // switch the rocket pump on
+        rocket = true;
+      }
+      else
+      {
+        digitalWrite(relayRocket,HIGH); // switch the rocket pump off
+        rocket = false;
+      }
+    }
 
+  }
+  else
+  {
+    digitalWrite(relayRocket,HIGH); // switch the rocket pump off
+    rocket = false;
   };
 
 
@@ -1064,7 +1068,7 @@ void loop(void)
       display.setCursor(114,48);
       display.print(" "); 
     };
-    display.drawBitmap(0, 46,  logo16_glcd_bmp, 16, 16, 1);
+    display.drawBitmap(0, 46,  logo16_tank_bmp, 16, 16, 1);
     display.drawBitmap(32, 46,  logo16_sol_bmp, 16, 16, 1);
     display.drawBitmap(64, 46,  logo16_solt_bmp, 16, 16, 1);
     display.drawBitmap(96, 46,  logo16_rock_bmp, 16, 16, 1);
@@ -1113,7 +1117,7 @@ void loop(void)
       display.setCursor(114,48);
       display.print(" "); 
     };
-    display.drawBitmap(0, 46,  logo16_glcd_bmp, 16, 16, 1);
+    display.drawBitmap(0, 46,  logo16_tank_bmp, 16, 16, 1);
     display.drawBitmap(32, 46,  logo16_sol_bmp, 16, 16, 1);
     display.drawBitmap(64, 46,  logo16_solt_bmp, 16, 16, 1);
     display.drawBitmap(96, 46,  logo16_rock_bmp, 16, 16, 1);
@@ -1162,7 +1166,7 @@ void loop(void)
       display.setCursor(114,48);
       display.print(" "); 
     };
-    display.drawBitmap(0, 46,  logo16_glcd_bmp, 16, 16, 1);
+    display.drawBitmap(0, 46,  logo16_tank_bmp, 16, 16, 1);
     display.drawBitmap(32, 46,  logo16_sol_bmp, 16, 16, 1);
     display.drawBitmap(64, 46,  logo16_solt_bmp, 16, 16, 1);
     display.drawBitmap(96, 46,  logo16_rock_bmp, 16, 16, 1);
@@ -1211,7 +1215,7 @@ void loop(void)
       display.setCursor(114,48);
       display.print(" "); 
     };
-    display.drawBitmap(0, 46,  logo16_glcd_bmp, 16, 16, 1);
+    display.drawBitmap(0, 46,  logo16_tank_bmp, 16, 16, 1);
     display.drawBitmap(32, 46,  logo16_sol_bmp, 16, 16, 1);
     display.drawBitmap(64, 46,  logo16_solt_bmp, 16, 16, 1);
     display.drawBitmap(96, 46,  logo16_rock_bmp, 16, 16, 1);
@@ -1273,7 +1277,3 @@ void printError(byte error)
     ;
   }
 }
-
-
-
-
