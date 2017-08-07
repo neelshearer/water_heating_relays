@@ -5,10 +5,8 @@
  * 
  * This is the code for running a Solar hot water system, with backup Rocket 
  * stove water heating for the greyer days! It also runs a light sensor to turn 
- * on campsite stair lighting when it gets dark. It adjusts the level of light as 
- * it gets darker to avoid dazzling campers and disturbing animal life too much.
- * Using a loop counter it activates a relay with a 4% duty cycle to control a
- * grey water recycling system, and prevent overfilling the tank. 
+ * on campsite stair lighting when it gets dark. 
+ * Using a loop counter it activates a relay to control a grey water recycling system. 
  * 
  * It makes use of several libraries:
  * 
@@ -339,7 +337,7 @@ void loop(void)
     lights = false;
   }
 
-  // Set up the Grow timing loop - pump should be on for the first 3 and middle 3 cycles in 75.
+  // Set up the Grow timing loop - water pump should be on 3 times within the 75 cycles.
 
   // loop counter should be reset after 75 loops.
 
@@ -351,11 +349,11 @@ void loop(void)
 
   ++loopno;
 
-  // Now check if we are at the first 4 cycles, or between 37 and 42 cycle and 
-  //   if so, turn relay on. 
+  // Now check if we are at the first 4 cycles, or between 24 and 28 cycle, or between 
+  //   50 and 54 cycle and if so, turn relay on. 
   // Otherwise, leave grow pump switched off.
 
-  if (loopno <= 4 || (loopno > 37 && loopno <= 41)) {
+  if (loopno <= 4 || (loopno > 24 && loopno <= 28) || (loopno > 50 && loopno <= 54)) {
     digitalWrite(relayGrow,LOW); // switch the relay and run the pump
     grow = true;
   }
@@ -425,22 +423,23 @@ void loop(void)
   else { 
     errcount=0; // if no sensors are reporting an error, reset counter
   };
-  if (errcount>=3 ||       // once a temperature error state has existed for 3 cycles or more, 
+
+  if (errcount>=3 ||   // once a temperature error state has existed for 3 cycles or more, 
   tempRocket>=95.00 || // start motors, otherwise ignore and treat as transient error 
   tempSolar>=95.00 ||  // unless rocket or panels, or tubes or tank are overheated then 
   tempSolTub>=95.00 || // immediately pump for all you're worth!
   tempTank>=65.00)
   {
-    if (loopno < 5) { // let pumps rest for a few cycles even in an error state
+    if (loopno < 5) {  // let pumps rest for a few cycles even in an error state
 
       delay(250);
-      digitalWrite(relayTank,HIGH); // switch the rocket pump off
+      digitalWrite(relayTank,HIGH);   // switch the tank pump off
       delay(250);
       digitalWrite(relayRocket,HIGH); // switch the rocket pump off
       delay(250);
-      digitalWrite(relaySolPan,HIGH); // switch the rocket pump off
+      digitalWrite(relaySolPan,HIGH); // switch the solar panel pump off
       delay(250);
-      digitalWrite(relaySolTub,HIGH); // switch the rocket pump off
+      digitalWrite(relaySolTub,HIGH); // switch the solar tubes pump off
 
       tank = false;
       solpan = false;
@@ -452,13 +451,13 @@ void loop(void)
     {
 
       delay(250);
-      digitalWrite(relayTank,LOW); // switch the rocket pump on
+      digitalWrite(relayTank,LOW);   // switch the tank pump on
       delay(250);
       digitalWrite(relayRocket,LOW); // switch the rocket pump on
       delay(250);
-      digitalWrite(relaySolPan,LOW); // switch the rocket pump on
+      digitalWrite(relaySolPan,LOW); // switch the solar panel pump on
       delay(250);
-      digitalWrite(relaySolTub,LOW); // switch the rocket pump on
+      digitalWrite(relaySolTub,LOW); // switch the solar tubes pump on
 
       tank = true;
       solpan = true;
@@ -973,9 +972,8 @@ void loop(void)
     display.println("Campsite");
     display.println("lights are");
     display.print("on @ ");
-    display.print(round((((lux*3)+20)/255)*100));
-    display.println("%");
-    display.print("brightness.");
+    display.print(round(lux));
+    display.println("lux");
     display.display();
     delay(500);  
   }
@@ -1276,4 +1274,3 @@ void printError(byte error)
     //      Serial.println("unknown error")
     ;
   }
-}
